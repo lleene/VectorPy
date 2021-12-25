@@ -1,14 +1,12 @@
-#!/usr/bin/env python3
-"""Color mapping testing scripts"""
+"""Color mapping utility scripts"""
 
-import cairo
-import numpy
 from typing import Tuple
+import numpy
+import cairo
+from cv2 import Sobel, CV_64F
 
-# from vector_plot import open_in_window
 
-
-class Linear_Gradient:
+class LinearGradient:
     def __init__(self, color_angle: float = None, color_step=None):
         self.gradient_angle = (
             numpy.random.uniform(low=-numpy.pi / 2, high=numpy.pi / 2)
@@ -39,21 +37,18 @@ class Linear_Gradient:
         X = numpy.indices(image[:, :, 0].shape).T.reshape(
             image.shape[0] * image.shape[1], 2
         )
-        Y = image.reshape(image.shape[0] * image.shape[1], *image.shape[2:])
-        return (
-            numpy.concatenate([X, numpy.ones(X.shape[0])[:, None]], axis=1),
-            Y,
-        )
+        return numpy.concatenate([X, numpy.ones(X.shape[0])[:, None]], axis=1)
 
     @classmethod
     def fit(cls, image, scale: float = 1.0):
+        Y = image.reshape(image.shape[0] * image.shape[1], *image.shape[2:])
         cfit, rfit = numpy.linalg.lstsq(
-            *cls.linear_features(image), rcond=None
+            cls.linear_features(image), Y, rcond=None
         )[:2]
         print(
             f"{100*numpy.linalg.norm(rfit) / image.size :.2f}% LLS residual error."
         )
-        assert numpy.linalg.norm(rfit) / image.size < 0.1  # tolerate 10% error
+        assert numpy.linalg.norm(rfit) / image.size < 0.2  # tolerate 20% error
         angle = numpy.arctan(
             numpy.divide(*list(numpy.linalg.norm(cfit[:-1, :], axis=1)))
             * numpy.sign(numpy.dot(cfit[0, :], cfit[1, :]))
@@ -62,21 +57,21 @@ class Linear_Gradient:
         if angle > 0:
             delta = numpy.array(
                 [
-                    [0, outline * 1.5 * numpy.sin(angle)],
-                    [0, outline * 1.5 * numpy.cos(angle)],
+                    [0, 1.5 * numpy.sin(angle)],
+                    [0, 1.5 * numpy.cos(angle)],
                 ]
             )
         else:
             delta = numpy.array(
                 [
-                    [outline, outline + outline * 1.5 * numpy.sin(angle)],
-                    [0, outline * 1.5 * numpy.cos(angle)],
+                    [1, 1 + 1.5 * numpy.sin(angle)],
+                    [0, 1.5 * numpy.cos(angle)],
                 ]
             )
         return (
             angle,
             (
-                numpy.dot(cfit[:2, :].T, delta)
+                numpy.dot(cfit[:2, :].T, delta * outline)
                 + numpy.repeat(cfit[-1, None].T, 2, axis=1)
             )[
                 :-1, :
@@ -85,7 +80,7 @@ class Linear_Gradient:
         )
 
 
-class Radial_Gradient:
+class RadialGradient:
     def __init__(
         self,
         color_center: Tuple[float, float] = None,
@@ -113,7 +108,17 @@ class Radial_Gradient:
         return pat
 
     @classmethod
-    def radial_features(cls, image):
+    def polynomial_features(cls, image):
+        """Generates feature space for linear mapping with linear gradient."""
+        X = numpy.indices(image[:, :, 0].shape).T.reshape(
+            image.shape[0] * image.shape[1], 2
+        )
+        return numpy.concatenate(
+            [X ** 2, X, numpy.ones(X.shape[0])[:, None]], axis=1
+        )
+
+    @classmethod
+    def radial_features(cls, image, centroid):
         """
         Generates feature space for concentric mapping with linear gradient.
 
@@ -124,40 +129,45 @@ class Radial_Gradient:
         The basis is normalized to the unit square and offset such that radial components
         are centered mid point.
         """
-        X = numpy.indices(image[:, :, 0].shape).T.reshape(
-            image.shape[0] * image.shape[1], 2
-        ) - round(numpy.max(image.shape) / 2)
+        X = numpy.subtract(
+            numpy.indices(image.shape[:2]).T.reshape(
+                image.shape[0] * image.shape[1], 2
+            ),
+            centroid,
+        )
         A = numpy.divide(
             X ** 2,
             numpy.sqrt(numpy.sum(X ** 2, axis=1))[:, None],
             where=numpy.isclose(X, 0.0, atol=1e-3).all(axis=1)[:, None]
             == False,
         )
-        Y = image.reshape(image.shape[0] * image.shape[1], *image.shape[2:])
-        return (
-            numpy.concatenate([X, A, numpy.ones(X.shape[0])[:, None]], axis=1),
-            Y,
-        )
+        # Y =
+        return numpy.concatenate([A, numpy.ones(X.shape[0])[:, None]], axis=1)
 
     @classmethod
     def fit(cls, image, scale: float = 1.0):
-        cfit, rfit = numpy.linalg.lstsq(
-            *cls.radial_features(image), rcond=None
+        Y = image.reshape(image.shape[0] * image.shape[1], *image.shape[2:])
+        pfit, pres = numpy.linalg.lstsq(
+            cls.polynomial_features(image), Y, rcond=None
+        )[:2]
+        outline = numpy.max(image.shape)
+        centroid = numpy.sum(pfit[2:4, :-1] / pfit[0:2, :-1], axis=1) / -6
+        cfit, cres = numpy.linalg.lstsq(
+            cls.radial_features(image, centroid), Y, rcond=None
         )[:2]
         print(
-            f"LLS residuals: {numpy.linalg.norm(rfit)} over {image.size} samples"
+            f"{100*numpy.linalg.norm(cres) / image.size :.2f}% LLS residual error at {centroid}"
         )
-        assert numpy.linalg.norm(rfit) < image.size
-        outline = numpy.max(image.shape)
-        delta = numpy.array([[0.0, 1.5 * outline], [0.0, 1.5 * outline]])
-        center = (
-            outline / 2
-            - numpy.sum(cfit[2:4, :-1] / cfit[0:2, :-1], axis=1) / 3
+        delta = numpy.array(  # Todo determine scaling after transform
+            [
+                [0.0, 1.5 / 2],
+                [0.0, 1.5 / 2],
+            ]
         )
         return (
-            center,
+            centroid / outline,
             (
-                numpy.dot(cfit[2:4, :].T, delta)
+                numpy.dot(cfit[:2, :].T, delta * outline)
                 + numpy.repeat(cfit[-1, None].T, 2, axis=1)
             )[
                 :-1, :
@@ -166,7 +176,7 @@ class Radial_Gradient:
         )
 
 
-def generate_L1_PNG(gradient, width: int = 100, height: int = 100):
+def generate_png(gradient, width: int = 100, height: int = 100):
     data = numpy.ndarray(shape=(height, width, 4), dtype=numpy.uint8)
     surface = cairo.ImageSurface.create_for_data(
         data, cairo.FORMAT_ARGB32, width, height
@@ -180,36 +190,6 @@ def generate_L1_PNG(gradient, width: int = 100, height: int = 100):
         gradient,
         data,
     )
-
-
-def test_case1(angle: float = None):
-    gradient, image_1 = generate_L1_PNG(
-        gradient=Linear_Gradient(color_angle=angle)
-    )
-    print(
-        f"Testing with {numpy.linalg.norm(gradient.gradient_color):.2f}"
-        + f" at {gradient.gradient_angle:.2f}"
-    )
-    angle, step = Linear_Gradient.fit(image_1, scale=1 / 255)
-    fit = Linear_Gradient(angle, step)
-    gradient_2, image_2 = generate_L1_PNG(gradient=fit)
-    return image_1, image_2
-
-
-def test_case2(angle: float = None):
-    gradient, image_1 = generate_L1_PNG(gradient=Radial_Gradient())
-    print(
-        f"Testing with {numpy.linalg.norm(gradient.gradient_color):.2f}"
-        + f" at {gradient.gradient_center}"
-    )
-    center, step = Radial_Gradient.fit(image_1, scale=1 / 255)
-    fit = Radial_Gradient(center, step)
-    gradient_2, image_2 = generate_L1_PNG(gradient=fit)
-    return image_1, image_2
-
-
-# test_case1()
-test_case2()
 
 
 # =]
