@@ -2,30 +2,14 @@
 
 from typing import List
 import numpy
-from scipy.ndimage.filters import maximum_filter, minimum_filter, median_filter
+from scipy.ndimage.filters import maximum_filter, median_filter
 import cv2
-from hilbert import decode
+import sys
 
 
 def select_channel(data):
     padding = numpy.ones(data[:, :, None].shape) * 128
     return numpy.concatenate((data[:, :, None], padding, padding), axis=2)
-
-
-def image_classfied(data, cluster_labels: List[int]):
-    bits = round(numpy.ceil(numpy.log2(len(cluster_labels)))) + 1
-    color_map = numpy.concatenate(
-        (
-            ((decode(cluster_labels, 2, bits) + 0.5) * 256 / (bits)),
-            numpy.ones((len(cluster_labels), 1)) * 128,
-        ),
-        axis=1,
-    ).astype(numpy.uint8)
-
-    def map_fnct(x):
-        return color_map[x]
-
-    return numpy.vectorize(map_fnct, signature="(n)->(n,3)")(data)
 
 
 def is_monochrome(image) -> bool:
@@ -41,10 +25,6 @@ def find_peaks_nd(data, size=5):
     return numpy.where(
         numpy.logical_and(data == maximum_filter(data, size=size), data > 0.0)
     )
-
-
-def denoise_class(data, size: int = 3):
-    return median_filter(data, size)
 
 
 def cluster_image(image, centroids):
@@ -85,77 +65,70 @@ def partion_image(data):
     return cluster_image(data, centroids), centroids
 
 
-def edges(data):
-    border = cv2.borderInterpolate(0, 1, cv2.BORDER_CONSTANT)
-    sc = numpy.vectorize(complex)(
-        cv2.Sobel(data, cv2.CV_64F, 1, 0, ksize=5, borderType=border),
-        cv2.Sobel(data, cv2.CV_64F, 0, 1, ksize=5, borderType=border),
-    )
-    return numpy.abs(sc), numpy.angle(sc, deg=True)
+def unravel(value, aliases):
+    if aliases[value] in aliases and aliases[aliases[value]] < aliases[value]:
+        aliases[value] = unravel(aliases[value], aliases)
+    return aliases[value]
 
 
-def find_edges_nd(data):
-    magnitude, angle = edges(data)
-    return numpy.logical_or(
-        numpy.logical_and(
-            magnitude > 10 * minimum_filter(magnitude, size=5),
-            maximum_filter(magnitude, footprint=Polarizing_Mask.Horizontal)
-            == magnitude,
-            numpy.vectorize(angle_mask)(angle, 0, 50),
-        ),
-        numpy.logical_and(
-            magnitude > 10 * minimum_filter(magnitude, size=5),
-            maximum_filter(magnitude, footprint=Polarizing_Mask.Vertical)
-            == magnitude,
-            numpy.vectorize(angle_mask)(angle, 90, 50),
-        ),
-    )
-
-
-class Polarizing_Mask:
-    """Parametric generation of a 2D mask for simple polarization"""
-
-    def _polarized_matrix(
-        size: int, angle: float, tolerance: float
-    ) -> List[List[bool]]:
-        return [
-            [
-                angle - tolerance
-                < numpy.angle(complex(i, j), deg=True)
-                < angle + tolerance
-                or angle - tolerance
-                < numpy.angle(complex(-i, -j), deg=True)
-                < angle + tolerance
-                or i == 0
-                and j == 0
-                for i in range(
-                    -numpy.floor(size / 2).astype(int),
-                    numpy.floor(size / 2).astype(int) + 1,
-                )
-            ]
-            for j in range(
-                -numpy.floor(size / 2).astype(int),
-                numpy.floor(size / 2).astype(int) + 1,
+def segment(image, cfd_image):
+    regions = numpy.zeros(cfd_image.shape, dtype=int)
+    region_counter = 0
+    aliases = {}
+    for x, y in numpy.ndindex(cfd_image.shape):
+        match = {
+            int(regions[x + ox, y + oy])
+            for ox, oy in [[0, -1], [-1, 0], [-1, -1], [-1, +1]]
+            if 0 <= x + ox < regions.shape[0]
+            and 0 <= y + oy < regions.shape[1]
+            and (
+                cfd_image[x, y] == cfd_image[x + ox, y + oy]
+                or numpy.sum(abs(image[x, y] - image[x + ox, y + oy])) < 2.0
             )
-        ]
+        }
+        if len(match) > 0:
+            regions[x, y] = min(
+                [unravel(elem, aliases) for elem in match if elem in aliases]
+                or list(match)
+            )
+            if len(match) > 1:
+                aliases.update({elem: regions[x, y] for elem in match})
+        else:
+            region_counter += 1
+            regions[x, y] = region_counter
+        for fx, fy in [
+            (x + ox, y + oy)
+            for ox, oy in [[0, +1], [+1, 0], [+1, -1], [+1, +1]]
+            if 0 <= x + ox < regions.shape[0]
+            and 0 <= y + oy < regions.shape[1]
+            and (
+                cfd_image[x, y] == cfd_image[x + ox, y + oy]
+                or numpy.sum(abs(image[x, y] - image[x + ox, y + oy])) < 2.0
+            )
+        ]:
+            regions[fx, fy] = regions[x, y]
+    for x, y in numpy.ndindex(regions.shape):
+        if regions[x, y] in aliases:
+            regions[x, y] = unravel(regions[x, y], aliases)
+    rlist, rcnts = numpy.unique(regions, return_counts=True)
+    blist = rlist[numpy.where(rcnts < 50)]
+    regions = numpy.where(numpy.isin(regions, blist), 0, regions)
+    return regions
 
-    Horizontal = numpy.array(_polarized_matrix(5, 0, 50))
-    Diagonal = numpy.array(_polarized_matrix(5, 45, 50))
-    Vertical = numpy.array(_polarized_matrix(5, 90, 50))
-    IDiagonal = numpy.array(_polarized_matrix(5, -45, 50))
 
-
-def angle_mask(data: float, angle: float, tolerance: float = 35):
-    return (
-        True
-        if (angle + 180 - tolerance) < (data + 180) < (angle + 180 + tolerance)
-        or ((angle + 360) - tolerance)
-        < (data + 180)
-        < ((angle + 360) + tolerance)
-        or ((angle + 360) % 360 - tolerance)
-        < (data + 180)
-        < ((angle + 360) % 360 + tolerance)
-        else False
+def find_edges(image, cfd_image):
+    # conclusion threshold using numpy.linalg.norm() < 120 is
+    # sufficient to differentiate soft/hard edges on first pass
+    return numpy.fromiter(
+        (
+            numpy.linalg.norm(image[x, y, :] - image[x + ox, y + oy, :])
+            for ox, oy in [[0, 1], [1, 0], [1, 1], [-1, 1]]
+            for x, y in numpy.ndindex(cfd_image.shape)
+            if 0 <= x + ox < cfd_image.shape[0]
+            and 0 <= y + oy < cfd_image.shape[1]
+            and cfd_image[x, y] != cfd_image[x + ox, y + oy]
+        ),
+        dtype=float,
     )
 
 
