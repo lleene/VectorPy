@@ -3,6 +3,7 @@
 from typing import List
 import numpy
 from scipy.ndimage.filters import maximum_filter, median_filter
+from scipy.ndimage.interpolation import shift
 import cv2
 import sys
 
@@ -71,42 +72,47 @@ def unravel(value, aliases):
     return aliases[value]
 
 
+def matching_neighbours(image, cfd_image, threshold):
+    return numpy.concatenate(
+        [
+            numpy.where(
+                numpy.logical_or(
+                    numpy.sum(
+                        abs(image - shift(image, (ox, oy, 0), cval=0)), axis=2
+                    )
+                    <= threshold,
+                    cfd_image - shift(cfd_image, (ox, oy), cval=0) == 0,
+                ),
+                True,
+                False,
+            )[:, :, None]
+            for ox, oy in [(1, 1), (1, 0), (1, -1), (0, 1)]
+        ],
+        axis=2,
+    )
+
+
 def segment(image, cfd_image):
     regions = numpy.zeros(cfd_image.shape, dtype=int)
+    match = matching_neighbours(image, cfd_image, 1)
+    offsets = numpy.array([(1, 1), (1, 0), (1, -1), (0, 1)])
     region_counter = 0
     aliases = {}
     for x, y in numpy.ndindex(cfd_image.shape):
-        match = {
-            int(regions[x + ox, y + oy])
-            for ox, oy in [[0, -1], [-1, 0], [-1, -1], [-1, +1]]
-            if 0 <= x + ox < regions.shape[0]
-            and 0 <= y + oy < regions.shape[1]
-            and (
-                cfd_image[x, y] == cfd_image[x + ox, y + oy]
-                or numpy.sum(abs(image[x, y] - image[x + ox, y + oy])) < 2.0
+        xy_match = offsets[numpy.where(match[x, y, :])[0]]
+        if xy_match.any():
+            matched_regions = {regions[x - ox, y - oy] for ox, oy in xy_match}
+            value = min(matched_regions)
+            regions[x, y] = (
+                unravel(value, aliases) if value in aliases else value
             )
-        }
-        if len(match) > 0:
-            regions[x, y] = min(
-                [unravel(elem, aliases) for elem in match if elem in aliases]
-                or list(match)
-            )
-            if len(match) > 1:
-                aliases.update({elem: regions[x, y] for elem in match})
+            if len(matched_regions) > 1:
+                aliases.update(
+                    {elem: regions[x, y] for elem in matched_regions}
+                )
         else:
             region_counter += 1
             regions[x, y] = region_counter
-        for fx, fy in [
-            (x + ox, y + oy)
-            for ox, oy in [[0, +1], [+1, 0], [+1, -1], [+1, +1]]
-            if 0 <= x + ox < regions.shape[0]
-            and 0 <= y + oy < regions.shape[1]
-            and (
-                cfd_image[x, y] == cfd_image[x + ox, y + oy]
-                or numpy.sum(abs(image[x, y] - image[x + ox, y + oy])) < 2.0
-            )
-        ]:
-            regions[fx, fy] = regions[x, y]
     for x, y in numpy.ndindex(regions.shape):
         if regions[x, y] in aliases:
             regions[x, y] = unravel(regions[x, y], aliases)

@@ -5,6 +5,6 @@ from vector_util import *
 from vector_plot import *
 
 
-show_segmentation("bw-sample4.png")
+show_segmentation("cl-sample4.jpg")
 
 # =]
