@@ -3,7 +3,6 @@
 from typing import List
 import numpy
 from scipy.ndimage.filters import maximum_filter, median_filter
-from scipy.ndimage.interpolation import shift
 import cv2
 import sys
 
@@ -72,16 +71,42 @@ def unravel(value, aliases):
     return aliases[value]
 
 
+def shift_image(image, shift, cval):
+    result = numpy.empty_like(image)
+    if shift == (1, 0):
+        result[:1, :] = cval
+        result[1:, :] = image[:-1, :]
+    if shift == (0, 1):
+        result[:, :1] = cval
+        result[:, 1:] = image[:, :-1]
+    if shift == (-1, 0):
+        result[-1:, :] = cval
+        result[:-1, :] = image[1:, :]
+    if shift == (0, -1):
+        result[:, -1:] = cval
+        result[:, :-1] = image[:, 1:]
+    if shift == (1, 1):
+        result[:, :1] = cval
+        result[:1, :] = cval
+        result[1:, 1:] = image[:-1, :-1]
+    if shift == (1, -1):
+        result[:, -1:] = cval
+        result[:1, :] = cval
+        result[1:, :-1] = image[:-1, 1:]
+    return result
+
+
 def matching_neighbours(image, cfd_image, threshold):
     return numpy.concatenate(
         [
             numpy.where(
                 numpy.logical_or(
                     numpy.sum(
-                        abs(image - shift(image, (ox, oy, 0), cval=0)), axis=2
+                        abs(image - shift_image(image, (ox, oy), cval=0)),
+                        axis=2,
                     )
                     <= threshold,
-                    cfd_image - shift(cfd_image, (ox, oy), cval=0) == 0,
+                    cfd_image - shift_image(cfd_image, (ox, oy), cval=0) == 0,
                 ),
                 True,
                 False,
