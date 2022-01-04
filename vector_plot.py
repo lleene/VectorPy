@@ -12,7 +12,7 @@ matplotlib.use("tkAgg")
 
 
 def image_classfied(data, centroids):
-    cluster_labels = list(range(centroids.size))
+    cluster_labels = list(range(max(numpy.array(centroids).shape) + 2))
     bits = round(numpy.ceil(numpy.log2(len(cluster_labels)))) + 1
     color_map = numpy.concatenate(
         (
@@ -67,6 +67,11 @@ def show_custered_color(data):
     open_in_window([data, data_c])
 
 
+def select_channel(data):
+    padding = numpy.ones(data[:, :, None].shape) * 128
+    return numpy.concatenate((data[:, :, None], padding, padding), axis=2)
+
+
 def open_in_window(img_list, base_name: str = "sample") -> None:
     for index, image in enumerate(img_list):
         cv2.namedWindow(f"{base_name}_{index}", cv2.WINDOW_NORMAL)
@@ -85,8 +90,8 @@ def show_classification(file_name):
 
 def show_segmentation(file_name):
     image = load_image(file_name)
-    centroids = numpy.array(histogram_centroids(image))
-    cfd_image = cluster_image(image, centroids)
+    cfd_image = classify_EH_hybrid(image)
+    centroids = numpy.unique(cfd_image)
     regions = segment(image, cfd_image)
     open_in_window(
         [image, image_classfied(cfd_image, centroids), regions % 256]

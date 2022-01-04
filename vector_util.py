@@ -1,24 +1,45 @@
 """Image Processing Utility Procedures"""
 
-from typing import List
+from tqdm import tqdm
 import numpy
-from scipy.ndimage.filters import maximum_filter, median_filter
 import cv2
-import sys
 
-
-def select_channel(data):
-    padding = numpy.ones(data[:, :, None].shape) * 128
-    return numpy.concatenate((data[:, :, None], padding, padding), axis=2)
-
+# TODO implement numpy native method
+from scipy.ndimage.filters import maximum_filter
+from sklearn.cluster import KMeans
 
 def is_monochrome(image) -> bool:
     return image[:, :, 1:].std() < 5.0
 
 
-def load_image(file_name: str):
+def derivative_features(image, size: int = 3):
+    border = cv2.borderInterpolate(0, 1, cv2.BORDER_CONSTANT)
+    return numpy.linalg.norm(
+        numpy.concatenate(
+            [
+                cv2.Sobel(
+                    image, cv2.CV_16S, 0, 1, ksize=size, borderType=border
+                ),
+                cv2.Sobel(
+                    image, cv2.CV_16S, 1, 0, ksize=size, borderType=border
+                ),
+            ],
+            axis=2,
+        ),
+        axis=2,
+    ).astype(int)
+
+
+def load_image(file_name: str, denoise_factor: int = None):
     img = cv2.imread(file_name)
-    return cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+    return cv2.cvtColor(
+        cv2.fastNlMeansDenoisingColored(
+            img, h=denoise_factor, hColor=denoise_factor
+        )
+        if denoise_factor
+        else img,
+        cv2.COLOR_BGR2RGB,
+    )
 
 
 def find_peaks_nd(data, size=5):
@@ -41,12 +62,12 @@ def cluster_image(image, centroids):
     )
 
 
-def histogram_centroids(data):
+def binary_search_histogram(color_samples):
     hcount, _ = numpy.histogramdd(
-        data.reshape(data.shape[0] * data.shape[1], *data.shape[2:]),
+        color_samples,
         bins=numpy.repeat(
-            numpy.arange(256)[:, None], data.shape[2], axis=1
-        ).transpose(),
+            numpy.arange(256)[:, None], color_samples.shape[1:], axis=1
+        ).T,
         density=True,
     )
     size = 32
@@ -60,14 +81,39 @@ def histogram_centroids(data):
     return centroids
 
 
-def partion_image(data):
-    centroids = numpy.array(histogram_centroids(data))
-    return cluster_image(data, centroids), centroids
+def classify_eh_hybrid(data):
+    kmeans = KMeans(
+        init="random", max_iter=500, n_clusters=2, random_state=1337
+    )
+    kmeans.fit(numpy.ravel(derivative_features(data, 5))[:, None])
+    noedge_colors = data.reshape(data.shape[0] * data.shape[1], 3)[
+        numpy.where(kmeans.labels_ != kmeans.cluster_centers_.argmin())[0], :
+    ]
+    centroids = binary_search_histogram(noedge_colors)
+    labeled_colors = (
+        numpy.argmin(
+            numpy.sum(
+                (
+                    data.reshape(data.shape[0] * data.shape[1], 3)[:, :, None]
+                    - numpy.array(centroids)[None, :, :]
+                )
+                ** 2,
+                axis=1,
+            ),
+            axis=1,
+        )
+        + 2
+    )
+    return numpy.where(
+        kmeans.labels_ != kmeans.cluster_centers_.argmin(),
+        1,
+        labeled_colors,
+    ).reshape(data.shape[:2])
 
 
-def unravel(value, aliases):
+def unravel_alias(value, aliases):
     if aliases[value] in aliases and aliases[aliases[value]] < aliases[value]:
-        aliases[value] = unravel(aliases[value], aliases)
+        aliases[value] = unravel_alias(aliases[value], aliases)
     return aliases[value]
 
 
@@ -85,24 +131,31 @@ def shift_image(image, shift, cval):
     if shift == (0, -1):
         result[:, -1:] = cval
         result[:, :-1] = image[:, 1:]
-    if shift == (1, 1):
-        result[:, :1] = cval
-        result[:1, :] = cval
-        result[1:, 1:] = image[:-1, :-1]
-    if shift == (1, -1):
-        result[:, -1:] = cval
-        result[:1, :] = cval
-        result[1:, :-1] = image[:-1, 1:]
     return result
 
 
+def matching_classes(cfd_image,):
+    return numpy.concatenate(
+        [
+            numpy.where(
+                cfd_image - shift_image(cfd_image, (ox, oy), cval=0) == 0,
+                True,
+                False,
+            )[:, :, None]
+            for ox, oy in [(1, 0), (0, 1), (-1, 0), (0, -1)]
+        ],
+        axis=2,
+    )
+
+
 def matching_neighbours(image, cfd_image, threshold):
+    not_edge = numpy.where(cfd_image[:, :, None] != 1, image, (-1, -1, -1))
     return numpy.concatenate(
         [
             numpy.where(
                 numpy.logical_or(
                     numpy.sum(
-                        abs(image - shift_image(image, (ox, oy), cval=0)),
+                        abs(image - shift_image(not_edge, (ox, oy), cval=0)),
                         axis=2,
                     )
                     <= threshold,
@@ -111,56 +164,49 @@ def matching_neighbours(image, cfd_image, threshold):
                 True,
                 False,
             )[:, :, None]
-            for ox, oy in [(1, 1), (1, 0), (1, -1), (0, 1)]
+            for ox, oy in [(1, 0), (0, 1)]
         ],
         axis=2,
     )
 
 
-def segment(image, cfd_image):
+def segment(image, cfd_image, threshold=1):
     regions = numpy.zeros(cfd_image.shape, dtype=int)
-    match = matching_neighbours(image, cfd_image, 1)
-    offsets = numpy.array([(1, 1), (1, 0), (1, -1), (0, 1)])
-    region_counter = 0
+    match = matching_neighbours(image, cfd_image, threshold)
+    offsets = numpy.array([(1, 0), (0, 1)])
+    region_counter = 1
     aliases = {}
-    for x, y in numpy.ndindex(cfd_image.shape):
-        xy_match = offsets[numpy.where(match[x, y, :])[0]]
-        if xy_match.any():
-            matched_regions = {regions[x - ox, y - oy] for ox, oy in xy_match}
-            value = min(matched_regions)
-            regions[x, y] = (
-                unravel(value, aliases) if value in aliases else value
-            )
-            if len(matched_regions) > 1:
-                aliases.update(
-                    {elem: regions[x, y] for elem in matched_regions}
+    for x in tqdm(range(cfd_image.shape[0]), desc="Segmenting"):
+        for y in range(cfd_image.shape[1]):
+            if cfd_image[x, y] == 1:
+                regions[x, y] = 1
+                continue
+            xy_match = offsets[numpy.where(match[x, y, :])[0]]
+            if xy_match.any():
+                matched_regions = {
+                    regions[x - ox, y - oy] for ox, oy in xy_match
+                }
+                value = min(matched_regions)
+                regions[x, y] = (
+                    unravel_alias(value, aliases)
+                    if value in aliases
+                    else value
                 )
-        else:
-            region_counter += 1
-            regions[x, y] = region_counter
+                if len(matched_regions) > 1:
+                    aliases.update(
+                        {elem: regions[x, y] for elem in matched_regions}
+                    )
+            else:
+                region_counter += 1
+                regions[x, y] = region_counter
     for x, y in numpy.ndindex(regions.shape):
         if regions[x, y] in aliases:
-            regions[x, y] = unravel(regions[x, y], aliases)
+            regions[x, y] = unravel_alias(regions[x, y], aliases)
     rlist, rcnts = numpy.unique(regions, return_counts=True)
     blist = rlist[numpy.where(rcnts < 50)]
     regions = numpy.where(numpy.isin(regions, blist), 0, regions)
     return regions
 
-
-def find_edges(image, cfd_image):
-    # conclusion threshold using numpy.linalg.norm() < 120 is
-    # sufficient to differentiate soft/hard edges on first pass
-    return numpy.fromiter(
-        (
-            numpy.linalg.norm(image[x, y, :] - image[x + ox, y + oy, :])
-            for ox, oy in [[0, 1], [1, 0], [1, 1], [-1, 1]]
-            for x, y in numpy.ndindex(cfd_image.shape)
-            if 0 <= x + ox < cfd_image.shape[0]
-            and 0 <= y + oy < cfd_image.shape[1]
-            and cfd_image[x, y] != cfd_image[x + ox, y + oy]
-        ),
-        dtype=float,
-    )
 
 
 # =]

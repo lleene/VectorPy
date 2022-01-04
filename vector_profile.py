@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """Profile scripts"""
 
+import glob
 import cProfile
 import pstats
 import io
 from vector_util import *
-import time
 
 
 def profile_segment(file_name):
     pr = cProfile.Profile()
     pr.enable()
     image = load_image(file_name)
-    centroids = numpy.array(histogram_centroids(image))
-    cfd_image = cluster_image(image, centroids)
-    regions = segment(image, cfd_image)
+    cfd_image = classify_eh_hybrid(image)
+    _ = segment(image, cfd_image)
     pr.disable()
     s = io.StringIO()
     ps = pstats.Stats(pr, stream=s).sort_stats("cumulative")
@@ -22,22 +21,8 @@ def profile_segment(file_name):
     print(s.getvalue())
 
 
-def compare_segment(file_name):
+for file_name in glob.glob("./*.jpg") + glob.glob("./*.png"):
     image = load_image(file_name)
-    centroids = numpy.array(histogram_centroids(image))
-    cfd_image = cluster_image(image, centroids)
-    print(f"Starting comparison ...")
-    time1 = time.time()
-    regions1 = segment(image, cfd_image)
-    time2 = time.time()
-    regions2 = segment2(image, cfd_image)
-    time3 = time.time()
-    print(
-        f"Segment1 took {time2-time1:.2f}s and Segment2 took {time3-time2:.2f}s"
-    )
-    _, counts = numpy.unique(regions1 != regions2, return_counts=True)
-    print(f"Found {counts} differences")
-
-
-file_name = "cl-sample4.jpg"
-compare_segment(file_name)
+    cfd_image = classify_eh_hybrid(image)
+    regions = segment(image, cfd_image)
+    cv2.imwrite(f"./temp/{file_name[2:-4]}.dn2.png", regions % 256)
