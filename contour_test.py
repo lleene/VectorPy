@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+"""Contour testing scripts"""
+
 from contour_util import *
 from vector_plot import *
 
@@ -6,7 +9,7 @@ from descartes import PolygonPatch
 
 
 
-file_name = "cl-sample4.jpg"
+file_name = "samples/cl-sample3.jpg"
 image = load_image(file_name)
 cfd_image = classify_eh_hybrid(image)
 centroids = numpy.unique(cfd_image)

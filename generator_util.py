@@ -1,6 +1,7 @@
 from vector_util import *
 from contour_util import *
 import cairo
+from tqdm import tqdm
 
 
 def generate_data_context(height, width) -> cairo.Context:
@@ -12,7 +13,9 @@ def generate_data_context(height, width) -> cairo.Context:
 
 
 def draw_polygons_context(ctx, polygons):
-    for poly_id, poly_obj, color in resolve_hierarchy(polygons):
+    for poly_id, poly_obj, color in tqdm(
+        resolve_hierarchy(polygons), desc="Constructing"
+    ):
         if type(poly_obj) != Polygon:
             continue
         points = numpy.array(poly_obj.exterior.xy)
@@ -47,4 +50,4 @@ def dump_to_data(file_name):
     ctx = cairo.Context(surface)
     draw_polygons_context(ctx, polygons)
     surface.finish()
-    return data[:,:,:3]
+    return data[:, :, :3]

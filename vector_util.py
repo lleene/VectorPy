@@ -1,5 +1,6 @@
 """Image Processing Utility Procedures"""
 
+from typing import List, Tuple
 from tqdm import tqdm
 import numpy
 import cv2
@@ -7,6 +8,7 @@ import cv2
 # TODO implement numpy native method
 from scipy.ndimage.filters import maximum_filter
 from sklearn.cluster import KMeans
+
 
 def is_monochrome(image) -> bool:
     return image[:, :, 1:].std() < 5.0
@@ -17,12 +19,8 @@ def derivative_features(image, size: int = 3):
     return numpy.linalg.norm(
         numpy.concatenate(
             [
-                cv2.Sobel(
-                    image, cv2.CV_16S, 0, 1, ksize=size, borderType=border
-                ),
-                cv2.Sobel(
-                    image, cv2.CV_16S, 1, 0, ksize=size, borderType=border
-                ),
+                cv2.Sobel(image, cv2.CV_16S, 0, 1, ksize=size, borderType=border),
+                cv2.Sobel(image, cv2.CV_16S, 1, 0, ksize=size, borderType=border),
             ],
             axis=2,
         ),
@@ -33,9 +31,7 @@ def derivative_features(image, size: int = 3):
 def load_image(file_name: str, denoise_factor: int = None):
     img = cv2.imread(file_name)
     return cv2.cvtColor(
-        cv2.fastNlMeansDenoisingColored(
-            img, h=denoise_factor, hColor=denoise_factor
-        )
+        cv2.fastNlMeansDenoisingColored(img, h=denoise_factor, hColor=denoise_factor)
         if denoise_factor
         else img,
         cv2.COLOR_BGR2RGB,
@@ -82,9 +78,7 @@ def binary_search_histogram(color_samples):
 
 
 def classify_eh_hybrid(data):
-    kmeans = KMeans(
-        init="random", max_iter=500, n_clusters=2, random_state=1337
-    )
+    kmeans = KMeans(init="random", max_iter=500, n_clusters=2, random_state=1337)
     kmeans.fit(numpy.ravel(derivative_features(data, 5))[:, None])
     noedge_colors = data.reshape(data.shape[0] * data.shape[1], 3)[
         numpy.where(kmeans.labels_ != kmeans.cluster_centers_.argmin())[0], :
@@ -134,7 +128,9 @@ def shift_image(image, shift, cval):
     return result
 
 
-def matching_classes(cfd_image,):
+def matching_classes(
+    cfd_image: numpy.array, offsets: List[Tuple[int, int]] = [(1, 0), (0, 1)]
+):
     return numpy.concatenate(
         [
             numpy.where(
@@ -142,13 +138,18 @@ def matching_classes(cfd_image,):
                 True,
                 False,
             )[:, :, None]
-            for ox, oy in [(1, 0), (0, 1), (-1, 0), (0, -1)]
+            for ox, oy in offsets
         ],
         axis=2,
     )
 
 
-def matching_neighbours(image, cfd_image, threshold):
+def matching_neighbours(
+    image: numpy.array,
+    cfd_image: numpy.array,
+    threshold: int,
+    offsets: List[Tuple[int, int]] = [(1, 0), (0, 1)],
+):
     not_edge = numpy.where(cfd_image[:, :, None] != 1, image, (-1, -1, -1))
     return numpy.concatenate(
         [
@@ -164,7 +165,7 @@ def matching_neighbours(image, cfd_image, threshold):
                 True,
                 False,
             )[:, :, None]
-            for ox, oy in [(1, 0), (0, 1)]
+            for ox, oy in offsets
         ],
         axis=2,
     )
@@ -172,8 +173,8 @@ def matching_neighbours(image, cfd_image, threshold):
 
 def segment(image, cfd_image, threshold=1):
     regions = numpy.zeros(cfd_image.shape, dtype=int)
-    match = matching_neighbours(image, cfd_image, threshold)
     offsets = numpy.array([(1, 0), (0, 1)])
+    match = matching_neighbours(image, cfd_image, threshold, list(offsets))
     region_counter = 1
     aliases = {}
     for x in tqdm(range(cfd_image.shape[0]), desc="Segmenting"):
@@ -183,19 +184,13 @@ def segment(image, cfd_image, threshold=1):
                 continue
             xy_match = offsets[numpy.where(match[x, y, :])[0]]
             if xy_match.any():
-                matched_regions = {
-                    regions[x - ox, y - oy] for ox, oy in xy_match
-                }
+                matched_regions = {regions[x - ox, y - oy] for ox, oy in xy_match}
                 value = min(matched_regions)
                 regions[x, y] = (
-                    unravel_alias(value, aliases)
-                    if value in aliases
-                    else value
+                    unravel_alias(value, aliases) if value in aliases else value
                 )
                 if len(matched_regions) > 1:
-                    aliases.update(
-                        {elem: regions[x, y] for elem in matched_regions}
-                    )
+                    aliases.update({elem: regions[x, y] for elem in matched_regions})
             else:
                 region_counter += 1
                 regions[x, y] = region_counter
@@ -206,7 +201,6 @@ def segment(image, cfd_image, threshold=1):
     blist = rlist[numpy.where(rcnts < 50)]
     regions = numpy.where(numpy.isin(regions, blist), 0, regions)
     return regions
-
 
 
 # =]
