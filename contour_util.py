@@ -1,7 +1,7 @@
 from typing import List, Dict, Tuple, NamedTuple
 import numpy
 from functools import cmp_to_key
-from shapely.geometry import Polygon, MultiPoint
+from shapely.geometry import Polygon, MultiPoint, Point
 from vector_util import matching_classes
 from tqdm import tqdm
 
@@ -19,6 +19,7 @@ class PolySeed(NamedTuple):
 
 
 def region_outlines(regions):
+    # (1, -1), (1, 1), (-1, 1), (-1, -1)]
     offsets = [(1, 0), (0, 1), (-1, 0), (0, -1)]
     return numpy.where(
         numpy.any(numpy.logical_not(matching_classes(regions, offsets)), axis=2),
@@ -60,6 +61,41 @@ def polyseed_comparison(seeda: PolySeed, seedb: PolySeed) -> int:
         return 0
 
 
+# rotate_clockwise = numpy.array([[0,-1],[1,0]])
+
+def closest_candidate(points, target, delta, tolerance: float = 3):
+    intersect = points[
+        numpy.where(
+            abs(numpy.dot(points, delta) - numpy.dot(target, delta)) < tolerance
+        )
+    ]
+    return intersect[numpy.argmin(numpy.sum((intersect - target) ** 2, axis=1))] if intersect.size else numpy.zeros((0,2))
+
+def find_linear_intersections(points,current_point, delta, count):
+    return numpy.vstack([
+        closest_candidate(points, current_point + delta * elem, delta)
+        for elem in range(1, count)
+    ])
+
+def fix_contour_gaps(candidates, points, delta, size):
+    # TODO consider recursive correction method
+    diff_candidates = numpy.diff(candidates, axis=0)
+    candidate_gaps = numpy.where(numpy.sum(diff_candidates ** 2, axis=1) > 8 * size ** 2)[0]
+    for gap in candidate_gaps[::-1]:
+        current_point = candidates[gap]
+        next_point = candidates[gap+1] - delta
+        new_count, new_delta = compute_delta(current_point, next_point, size)
+        new_candidates = find_linear_intersections(points,current_point,new_delta,new_count)
+        if new_candidates.size >= 1:
+            candidates = numpy.insert(candidates, gap + 1, new_candidates, axis=0)
+    return candidates
+
+def compute_delta(current_point, next_point, size):
+    delta = next_point - current_point
+    count = numpy.floor(numpy.linalg.norm(delta) / size).astype(int)
+    delta = delta / count if count else delta
+    return count, delta
+
 def estimate_contour(points: numpy.array, size: int) -> numpy.array:
     poly_obj = MultiPoint(points).convex_hull
     hull = (
@@ -71,29 +107,18 @@ def estimate_contour(points: numpy.array, size: int) -> numpy.array:
     while index < hull.shape[0]:
         current_point = hull[index]
         next_point = hull[(index + 1) % hull.shape[0]]
-        delta = next_point - current_point
-        count = numpy.floor(numpy.linalg.norm(delta) / size).astype(int)
+        count, delta = compute_delta(current_point,next_point,size)
         if count <= 1:
             index = index + 1
             continue
-        delta = delta / count
-        targets = (
-            numpy.repeat(numpy.arange(1, count)[:, None], (2), axis=1) * delta
-            + current_point
-        )
-        candidates = [
-            numpy.argmin(numpy.sum((points[:, :] - elem) ** 2, axis=1))
-            for elem in targets
-        ]
-        candidates = list(dict.fromkeys(candidates))
-        if len(candidates) >= 1:
-            hull = numpy.insert(hull, index+1, points[candidates], axis=0)
+        candidates = find_linear_intersections(points,current_point, delta, count)
+        if candidates.size >= 1:
+            hull = numpy.insert(hull, index + 1, fix_contour_gaps(candidates, points, delta, size), axis=0)
         index = index + len(candidates) + 1
     return hull
 
 
 def offset_matrix(size: int = 2) -> numpy.array:
-    # Dict[Tuple[int,int],int]:
     offsets = (
         numpy.indices((2 * size + 1, 2 * size + 1))
         - numpy.array([size, size])[:, None, None]
