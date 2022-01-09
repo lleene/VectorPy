@@ -19,7 +19,6 @@ class PolySeed(NamedTuple):
 
 
 def region_outlines(regions):
-    # (1, -1), (1, 1), (-1, 1), (-1, -1)]
     offsets = [(1, 0), (0, 1), (-1, 0), (0, -1)]
     return numpy.where(
         numpy.any(numpy.logical_not(matching_classes(regions, offsets)), axis=2),
@@ -39,7 +38,7 @@ def seed_polygons(regions: numpy.array, image: numpy.array) -> List[PolySeed]:
     return [
         PolySeed(
             region_id,
-            Polygon(estimate_contour(collection[region_id], 3)),
+            Polygon(estimate_contour(collection[region_id], 6)),
             Color3F(*numpy.mean(image[numpy.where(regions == region_id)], axis=(0))),
         )
         for region_id in tqdm(keys, desc="Tracing")
@@ -61,34 +60,56 @@ def polyseed_comparison(seeda: PolySeed, seedb: PolySeed) -> int:
         return 0
 
 
-# rotate_clockwise = numpy.array([[0,-1],[1,0]])
-
-def closest_candidate(points, target, delta, tolerance: float = 3):
+def closest_candidate(points, target, delta, tolerance: float = 1.5):
     intersect = points[
         numpy.where(
-            abs(numpy.dot(points, delta) - numpy.dot(target, delta)) < tolerance
+            abs(numpy.dot(points, delta) - numpy.dot(target, delta))
+            < tolerance * numpy.linalg.norm(delta)
         )
     ]
-    return intersect[numpy.argmin(numpy.sum((intersect - target) ** 2, axis=1))] if intersect.size else numpy.zeros((0,2))
+    return (
+        intersect[numpy.argmin(numpy.sum((intersect - target) ** 2, axis=1))]
+        if intersect.size
+        else numpy.zeros((0, 2))
+    )
 
-def find_linear_intersections(points,current_point, delta, count):
-    return numpy.vstack([
-        closest_candidate(points, current_point + delta * elem, delta)
-        for elem in range(1, count)
-    ])
 
-def fix_contour_gaps(candidates, points, delta, size):
-    # TODO consider recursive correction method
+def find_linear_intersections(points, current_point, delta, count):
+    return numpy.vstack(
+        [
+            closest_candidate(points, current_point + delta * elem, delta)
+            for elem in range(1, count)
+        ]
+    )
+
+
+def fix_contour_gaps(candidates, points, delta, size, iterations: int = 2):
+    if iterations <= 0:
+        return candidates
     diff_candidates = numpy.diff(candidates, axis=0)
-    candidate_gaps = numpy.where(numpy.sum(diff_candidates ** 2, axis=1) > 8 * size ** 2)[0]
+    candidate_gaps = numpy.where(
+        numpy.sum(diff_candidates ** 2, axis=1) > 8 * size ** 2
+    )[0]
     for gap in candidate_gaps[::-1]:
         current_point = candidates[gap]
-        next_point = candidates[gap+1] - delta
+        next_point = candidates[gap + 1] - delta
         new_count, new_delta = compute_delta(current_point, next_point, size)
-        new_candidates = find_linear_intersections(points,current_point,new_delta,new_count)
+        if new_count <= 1:
+            continue
+        new_candidates = find_linear_intersections(
+            points, current_point, new_delta, new_count
+        )
         if new_candidates.size >= 1:
-            candidates = numpy.insert(candidates, gap + 1, new_candidates, axis=0)
+            candidates = numpy.insert(
+                candidates,
+                gap + 1,
+                fix_contour_gaps(
+                    new_candidates, points, new_delta, size, iterations - 1
+                ),
+                axis=0,
+            )
     return candidates
+
 
 def compute_delta(current_point, next_point, size):
     delta = next_point - current_point
@@ -96,25 +117,30 @@ def compute_delta(current_point, next_point, size):
     delta = delta / count if count else delta
     return count, delta
 
-def estimate_contour(points: numpy.array, size: int) -> numpy.array:
+
+def estimate_contour(
+    points: numpy.array, size: int,
+) -> numpy.array:
     poly_obj = MultiPoint(points).convex_hull
     hull = (
         numpy.array(poly_obj.exterior.xy).T
         if type(poly_obj) == Polygon
         else numpy.array([])
     )
-    index = 0
-    while index < hull.shape[0]:
-        current_point = hull[index]
-        next_point = hull[(index + 1) % hull.shape[0]]
-        count, delta = compute_delta(current_point,next_point,size)
+    for index in range(hull.shape[0],0,-1):
+        current_point = hull[index - 1]
+        next_point = hull[index % hull.shape[0]]
+        count, delta = compute_delta(current_point, next_point, size)
         if count <= 1:
-            index = index + 1
             continue
-        candidates = find_linear_intersections(points,current_point, delta, count)
+        candidates = find_linear_intersections(points, current_point, delta, count)
         if candidates.size >= 1:
-            hull = numpy.insert(hull, index + 1, fix_contour_gaps(candidates, points, delta, size), axis=0)
-        index = index + len(candidates) + 1
+            hull = numpy.insert(
+                hull,
+                index,
+                fix_contour_gaps(candidates, points, delta, size),
+                axis=0,
+            )
     return hull
 
 
@@ -130,4 +156,4 @@ def offset_matrix(size: int = 2) -> numpy.array:
     ]
 
 
-# =]
+# eof

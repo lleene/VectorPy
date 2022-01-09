@@ -1,6 +1,6 @@
 """Image Processing Utility Procedures"""
 
-from typing import List, Tuple
+from typing import List, Tuple, Union
 from tqdm import tqdm
 import numpy
 import cv2
@@ -10,7 +10,7 @@ from scipy.ndimage.filters import maximum_filter
 from sklearn.cluster import KMeans
 
 
-def is_monochrome(image) -> bool:
+def is_monochrome(image: numpy.array) -> bool:
     return image[:, :, 1:].std() < 5.0
 
 
@@ -66,43 +66,41 @@ def binary_search_histogram(color_samples):
         ).T,
         density=True,
     )
-    size = 32
+    size = 50
     for step in range(4):  # do binary search here
         centroids = find_peaks_nd(hcount, size)
         size = (
-            size + 16 / (1 << step)
+            size + (32 / (1 << step))
             if len(centroids[1]) > 20
-            else size - 16 / (1 << step)
+            else size - (32 / (1 << step))
         )
     return centroids
 
 
 def classify_eh_hybrid(data):
-    kmeans = KMeans(init="random", max_iter=500, n_clusters=2, random_state=1337)
-    kmeans.fit(numpy.ravel(derivative_features(data, 5))[:, None])
+    kmeans = KMeans(init="random", max_iter=100, n_clusters=2, random_state=1337)
+    kmeans.fit(numpy.ravel(derivative_features(data, 3))[:, None])
+    edge_class = kmeans.cluster_centers_.argmax()
     noedge_colors = data.reshape(data.shape[0] * data.shape[1], 3)[
-        numpy.where(kmeans.labels_ != kmeans.cluster_centers_.argmin())[0], :
+        numpy.where(kmeans.labels_ != edge_class)[0], :
     ]
     centroids = binary_search_histogram(noedge_colors)
-    labeled_colors = (
-        numpy.argmin(
-            numpy.sum(
-                (
-                    data.reshape(data.shape[0] * data.shape[1], 3)[:, :, None]
-                    - numpy.array(centroids)[None, :, :]
-                )
-                ** 2,
-                axis=1,
-            ),
-            axis=1,
+    labeled_colors = numpy.empty_like(data[:, :, 0])
+    for row in numpy.ndindex(labeled_colors.shape[0]):
+        labeled_colors[row, :] = (
+            numpy.argmin(
+                numpy.sum(
+                    (data[row, :, :, None] - numpy.array(centroids)[None, None, :, :])
+                    ** 2,
+                    axis=2,
+                ),
+                axis=2,
+            )
+            + 2
         )
-        + 2
-    )
     return numpy.where(
-        kmeans.labels_ != kmeans.cluster_centers_.argmin(),
-        1,
-        labeled_colors,
-    ).reshape(data.shape[:2])
+        (kmeans.labels_ != edge_class).reshape(data.shape[:2]), labeled_colors, 1
+    )
 
 
 def unravel_alias(value, aliases):
@@ -111,7 +109,7 @@ def unravel_alias(value, aliases):
     return aliases[value]
 
 
-def shift_image(image, shift, cval):
+def shift_image(image: numpy.array, shift: int, cval: Union[float, int]):
     result = numpy.empty_like(image)
     if shift == (1, 0):
         result[:1, :] = cval
@@ -171,7 +169,17 @@ def matching_neighbours(
     )
 
 
-def segment(image, cfd_image, threshold=1):
+def morphic_filter(regions, minimum_count: int = 50):
+    region_ids, region_counts = numpy.unique(regions, return_counts=True)
+    region_filter = numpy.array([], dtype=int)
+    for region_id in region_ids[numpy.where(region_counts >= minimum_count)]:
+        points = numpy.where(regions == region_id)
+        if numpy.unique(points[0]).size > 1 and numpy.unique(points[1]).size > 1:
+            region_filter = numpy.insert(region_filter, 0, region_id)
+    return numpy.where(numpy.isin(regions, region_filter), regions, 0)
+
+
+def segment(image: numpy.array, cfd_image: numpy.array, threshold: int = 2):
     regions = numpy.zeros(cfd_image.shape, dtype=int)
     offsets = numpy.array([(1, 0), (0, 1)])
     match = matching_neighbours(image, cfd_image, threshold, list(offsets))
@@ -197,10 +205,7 @@ def segment(image, cfd_image, threshold=1):
     for x, y in numpy.ndindex(regions.shape):
         if regions[x, y] in aliases:
             regions[x, y] = unravel_alias(regions[x, y], aliases)
-    rlist, rcnts = numpy.unique(regions, return_counts=True)
-    blist = rlist[numpy.where(rcnts < 50)]
-    regions = numpy.where(numpy.isin(regions, blist), 0, regions)
-    return regions
+    return morphic_filter(regions)
 
 
 # =]
