@@ -81,21 +81,21 @@ def open_in_window(img_list, base_name: str = "sample") -> None:
     cv2.destroyAllWindows()
 
 
-def show_classification(file_name):
-    image = load_image(file_name)
-    centroids = numpy.array(histogram_centroids(image))
-    cfd_image = cluster_image(image, centroids)
-    show_histogram(find_edges(image, cfd_image))
-
 
 def show_segmentation(file_name):
     image = load_image(file_name)
-    cfd_image = classify_EH_hybrid(image)
+    cfd_image = classify_eh_hybrid(image)
     centroids = numpy.unique(cfd_image)
     regions = segment(image, cfd_image)
     open_in_window(
         [image, image_classfied(cfd_image, centroids), regions % 256]
     )
 
+def show_lineart(file_name):
+    image = load_image(file_name)
+    cfd_image = classify_eh_hybrid(image)
+    open_in_window(
+        [numpy.where((cfd_image==1)[:,:,None],image,(0,0,0))]
+    )
 
 # =]

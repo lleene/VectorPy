@@ -27,12 +27,12 @@ def draw_polygons_context(ctx, polygons):
         ctx.fill()
 
 
-def dump_to_svg_file(file_name):
+def dump_to_svg_file(file_name, output_file: str = "temp.svg"):
     image = load_image(file_name)
     cfd_image = classify_eh_hybrid(image)
     regions = segment(image, cfd_image)
     polygons = seed_polygons(regions, image)
-    with cairo.SVGSurface("temp.svg", image.shape[1], image.shape[0]) as surface:
+    with cairo.SVGSurface(output_file, image.shape[1], image.shape[0]) as surface:
         ctx = cairo.Context(surface)
         draw_polygons_context(ctx, polygons)
         surface.finish()
@@ -40,8 +40,7 @@ def dump_to_svg_file(file_name):
 
 def dump_to_data(file_name):
     image = load_image(file_name)
-    cfd_image = classify_eh_hybrid(image)
-    regions = segment(image, cfd_image)
+    regions = segment_edges(image)
     polygons = seed_polygons(regions, image)
     data = numpy.ndarray(shape=(image.shape[0], image.shape[1], 4), dtype=numpy.uint8)
     surface = cairo.ImageSurface.create_for_data(

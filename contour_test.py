@@ -8,6 +8,35 @@ from vector_plot import *
 from descartes import PolygonPatch
 
 
+def test_linear():
+    regions = numpy.zeros((20, 20))
+    regions[1:-1, 1:-1] = 1
+    regions[8:13, 8:] = 0
+    regions[5:16, 5:16] = 0
+    points = numpy.array(numpy.where(regions == 1)).T
+    poly = Polygon(estimate_contour(points, 1))
+    assert poly.is_valid
+    assert (
+        len(
+            [
+                tuple(elem)
+                for elem in numpy.array(numpy.where(regions == 0)).T
+                if poly.covers(Point(tuple(elem)))
+            ]
+        )
+        < 4
+    )
+    assert (
+        len(
+            [
+                tuple(elem)
+                for elem in numpy.array(numpy.where(regions == 1)).T
+                if not poly.covers(Point(tuple(elem)))
+            ]
+        )
+        < 4
+    )
+
 
 file_name = "samples/cl-sample3.jpg"
 image = load_image(file_name)

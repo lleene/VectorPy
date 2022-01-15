@@ -14,18 +14,14 @@ def is_monochrome(image: numpy.array) -> bool:
     return image[:, :, 1:].std() < 5.0
 
 
-def derivative_features(image, size: int = 3):
-    border = cv2.borderInterpolate(0, 1, cv2.BORDER_CONSTANT)
-    return numpy.linalg.norm(
-        numpy.concatenate(
-            [
-                cv2.Sobel(image, cv2.CV_16S, 0, 1, ksize=size, borderType=border),
-                cv2.Sobel(image, cv2.CV_16S, 1, 0, ksize=size, borderType=border),
-            ],
-            axis=2,
-        ),
-        axis=2,
-    ).astype(int)
+def derivative_features(image, size: int = 5):
+    # TODO this may be throwing away radial information for negative deltas
+    scale = 1/numpy.sum(numpy.abs(numpy.outer(*cv2.getDerivKernels(1, 0, size))))
+    components = numpy.vectorize(complex)(
+                numpy.linalg.norm(cv2.Sobel(image, cv2.CV_32F, 0, 1, ksize=size, scale=scale, borderType=cv2.BORDER_REFLECT),axis=2),
+                numpy.linalg.norm(cv2.Sobel(image, cv2.CV_32F, 1, 0, ksize=size, scale=scale, borderType=cv2.BORDER_REFLECT),axis=2),
+        )
+    return numpy.abs(components).astype(int), numpy.angle(components, deg=True).astype(int)
 
 
 def load_image(file_name: str, denoise_factor: int = None):
@@ -79,7 +75,7 @@ def binary_search_histogram(color_samples):
 
 def classify_eh_hybrid(data):
     kmeans = KMeans(init="random", max_iter=100, n_clusters=2, random_state=1337)
-    kmeans.fit(numpy.ravel(derivative_features(data, 3))[:, None])
+    kmeans.fit(numpy.ravel(derivative_features(data, 5))[0][:, None])
     edge_class = kmeans.cluster_centers_.argmax()
     noedge_colors = data.reshape(data.shape[0] * data.shape[1], 3)[
         numpy.where(kmeans.labels_ != edge_class)[0], :
@@ -114,15 +110,33 @@ def shift_image(image: numpy.array, shift: int, cval: Union[float, int]):
     if shift == (1, 0):
         result[:1, :] = cval
         result[1:, :] = image[:-1, :]
-    if shift == (0, 1):
+    elif shift == (0, 1):
         result[:, :1] = cval
         result[:, 1:] = image[:, :-1]
-    if shift == (-1, 0):
+    elif shift == (-1, 0):
         result[-1:, :] = cval
         result[:-1, :] = image[1:, :]
-    if shift == (0, -1):
+    elif shift == (0, -1):
         result[:, -1:] = cval
         result[:, :-1] = image[:, 1:]
+    elif shift == (-1, -1):
+        result[-1:, :] = cval
+        result[:, -1:] = cval
+        result[:-1, :-1] = image[1:, 1:]
+    elif shift == (1, 1):
+        result[:1, :] = cval
+        result[:, :1] = cval
+        result[1:, 1:] = image[:-1, :-1]
+    elif shift == (1, -1):
+        result[:1, :] = cval
+        result[:, -1:] = cval
+        result[1:, :-1] = image[:-1, 1:]
+    elif shift == (-1, 1):
+        result[-1:, :] = cval
+        result[:, 1] = cval
+        result[:-1, 1:] = image[1:, :-1]
+    else:
+        raise ValueError(f"Unspecified shift value: {shift}")
     return result
 
 
@@ -132,7 +146,7 @@ def matching_classes(
     return numpy.concatenate(
         [
             numpy.where(
-                cfd_image - shift_image(cfd_image, (ox, oy), cval=0) == 0,
+                cfd_image - shift_image(cfd_image, (ox, oy), cval=-1) == 0,
                 True,
                 False,
             )[:, :, None]
@@ -148,17 +162,15 @@ def matching_neighbours(
     threshold: int,
     offsets: List[Tuple[int, int]] = [(1, 0), (0, 1)],
 ):
-    not_edge = numpy.where(cfd_image[:, :, None] != 1, image, (-1, -1, -1))
+    # TODO reuse derivative features here instead
+    deriv = derivative_features(image, 5)[0]
     return numpy.concatenate(
         [
             numpy.where(
                 numpy.logical_or(
-                    numpy.sum(
-                        abs(image - shift_image(not_edge, (ox, oy), cval=0)),
-                        axis=2,
-                    )
+                    shift_image(deriv, (ox, oy), cval=255)
                     <= threshold,
-                    cfd_image - shift_image(cfd_image, (ox, oy), cval=0) == 0,
+                    cfd_image - shift_image(cfd_image, (ox, oy), cval=-1) == 0,
                 ),
                 True,
                 False,
@@ -169,7 +181,7 @@ def matching_neighbours(
     )
 
 
-def morphic_filter(regions, minimum_count: int = 50):
+def morphic_filter(regions, minimum_count):
     region_ids, region_counts = numpy.unique(regions, return_counts=True)
     region_filter = numpy.array([], dtype=int)
     for region_id in region_ids[numpy.where(region_counts >= minimum_count)]:
@@ -179,18 +191,21 @@ def morphic_filter(regions, minimum_count: int = 50):
     return numpy.where(numpy.isin(regions, region_filter), regions, 0)
 
 
-def segment(image: numpy.array, cfd_image: numpy.array, threshold: int = 2):
+def segment(image: numpy.array, cfd_image: numpy.array, threshold: int = 5):
+    # TODO adjust threshold for edges
     regions = numpy.zeros(cfd_image.shape, dtype=int)
-    offsets = numpy.array([(1, 0), (0, 1)])
-    match = matching_neighbours(image, cfd_image, threshold, list(offsets))
+    soft_offsets = numpy.array([(1, 0), (0, 1), (1, -1), (1, 1)])
+    hard_offsets = numpy.array([(1, 0), (0, 1), (1, -1), (1, 1)])
+    soft_match = matching_neighbours(image, cfd_image, threshold, list(soft_offsets))
+    hard_match = matching_classes(cfd_image, list(hard_offsets))
     region_counter = 1
     aliases = {}
     for x in tqdm(range(cfd_image.shape[0]), desc="Segmenting"):
         for y in range(cfd_image.shape[1]):
             if cfd_image[x, y] == 1:
-                regions[x, y] = 1
-                continue
-            xy_match = offsets[numpy.where(match[x, y, :])[0]]
+                xy_match = hard_offsets[numpy.where(hard_match[x, y, :])[0]]
+            else:
+                xy_match = soft_offsets[numpy.where(soft_match[x, y, :])[0]]
             if xy_match.any():
                 matched_regions = {regions[x - ox, y - oy] for ox, oy in xy_match}
                 value = min(matched_regions)
@@ -205,7 +220,37 @@ def segment(image: numpy.array, cfd_image: numpy.array, threshold: int = 2):
     for x, y in numpy.ndindex(regions.shape):
         if regions[x, y] in aliases:
             regions[x, y] = unravel_alias(regions[x, y], aliases)
-    return morphic_filter(regions)
+    return morphic_filter(regions, 50)
 
 
-# =]
+def segment_edges(data):
+    kmeans = KMeans(init="random", max_iter=100, n_clusters=2, random_state=1337)
+    kmeans.fit(numpy.ravel(derivative_features(data, 5)[0])[:, None])
+    edge_class = kmeans.cluster_centers_.argmax()
+    cfd_image = (kmeans.labels_ == edge_class).reshape(data.shape[:2]).astype(int)
+    regions = numpy.zeros(cfd_image.shape, dtype=int)
+    hard_offsets = numpy.array([(1, 0), (0, 1), (1, -1), (1, 1)])
+    hard_match = matching_classes(cfd_image, list(hard_offsets))
+    region_counter = 0
+    aliases = {}
+    for x in tqdm(range(cfd_image.shape[0]), desc="Segmenting"):
+        for y in range(cfd_image.shape[1]):
+            xy_match = hard_offsets[numpy.where(hard_match[x, y, :])[0]]
+            if xy_match.any():
+                matched_regions = {regions[x - ox, y - oy] for ox, oy in xy_match}
+                value = min(matched_regions)
+                regions[x, y] = (
+                    unravel_alias(value, aliases) if value in aliases else value
+                )
+                if len(matched_regions) > 1:
+                    aliases.update({elem: regions[x, y] for elem in matched_regions})
+            else:
+                region_counter += 1
+                regions[x, y] = region_counter
+    for x, y in numpy.ndindex(regions.shape):
+        if regions[x, y] in aliases:
+            regions[x, y] = unravel_alias(regions[x, y], aliases)
+    return morphic_filter(regions, 10)
+
+
+# =] distanceTransform
