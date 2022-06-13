@@ -2,7 +2,6 @@
 """Color mapping testing scripts"""
 
 from color_util import *
-
 from vector_plot import *
 
 

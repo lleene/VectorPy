@@ -1,12 +1,13 @@
 """Image Processing Plotting Procedures"""
 
-from typing import List
+
 from matplotlib import pyplot
-import numpy
-import cv2
+from base_util import *
 from vector_util import *
+import cv2
 import matplotlib
 from hilbert import decode
+
 
 matplotlib.use("tkAgg")
 
@@ -63,7 +64,7 @@ def plot_peaks_2d(data):
 
 
 def show_custered_color(data):
-    data_c = partion_color(data)
+    data_c = classify_eh_hybrid(data)
     open_in_window([data, data_c])
 
 
@@ -81,7 +82,6 @@ def open_in_window(img_list, base_name: str = "sample") -> None:
     cv2.destroyAllWindows()
 
 
-
 def show_segmentation(file_name):
     image = load_image(file_name)
     cfd_image = classify_eh_hybrid(image)
@@ -90,6 +90,7 @@ def show_segmentation(file_name):
     open_in_window(
         [image, image_classfied(cfd_image, centroids), regions % 256]
     )
+
 
 def show_lineart(file_name):
     image = load_image(file_name)

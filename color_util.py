@@ -3,7 +3,6 @@
 from typing import Tuple
 import numpy
 import cairo
-from cv2 import Sobel, CV_64F
 
 
 class LinearGradient:

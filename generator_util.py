@@ -1,3 +1,4 @@
+from base_util import *
 from vector_util import *
 from contour_util import *
 import cairo

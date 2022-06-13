@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Contour testing scripts"""
 
+from base_util import *
 from contour_util import *
 from vector_plot import *
 

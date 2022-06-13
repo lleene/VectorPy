@@ -1,37 +1,12 @@
 """Image Processing Utility Procedures"""
 
-from typing import List, Tuple, Union
+from base_util import derivative_features, shift_image
+from typing import List, Tuple
 from tqdm import tqdm
 import numpy
-import cv2
 
-# TODO implement numpy native method
 from scipy.ndimage.filters import maximum_filter
 from sklearn.cluster import KMeans
-
-
-def is_monochrome(image: numpy.array) -> bool:
-    return image[:, :, 1:].std() < 5.0
-
-
-def derivative_features(image, size: int = 5):
-    # TODO this may be throwing away radial information for negative deltas
-    scale = 1/numpy.sum(numpy.abs(numpy.outer(*cv2.getDerivKernels(1, 0, size))))
-    components = numpy.vectorize(complex)(
-                numpy.linalg.norm(cv2.Sobel(image, cv2.CV_32F, 0, 1, ksize=size, scale=scale, borderType=cv2.BORDER_REFLECT),axis=2),
-                numpy.linalg.norm(cv2.Sobel(image, cv2.CV_32F, 1, 0, ksize=size, scale=scale, borderType=cv2.BORDER_REFLECT),axis=2),
-        )
-    return numpy.abs(components).astype(int), numpy.angle(components, deg=True).astype(int)
-
-
-def load_image(file_name: str, denoise_factor: int = None):
-    img = cv2.imread(file_name)
-    return cv2.cvtColor(
-        cv2.fastNlMeansDenoisingColored(img, h=denoise_factor, hColor=denoise_factor)
-        if denoise_factor
-        else img,
-        cv2.COLOR_BGR2RGB,
-    )
 
 
 def find_peaks_nd(data, size=5):
@@ -104,42 +79,6 @@ def unravel_alias(value, aliases):
         aliases[value] = unravel_alias(aliases[value], aliases)
     return aliases[value]
 
-
-def shift_image(image: numpy.array, shift: int, cval: Union[float, int]):
-    result = numpy.empty_like(image)
-    if shift == (1, 0):
-        result[:1, :] = cval
-        result[1:, :] = image[:-1, :]
-    elif shift == (0, 1):
-        result[:, :1] = cval
-        result[:, 1:] = image[:, :-1]
-    elif shift == (-1, 0):
-        result[-1:, :] = cval
-        result[:-1, :] = image[1:, :]
-    elif shift == (0, -1):
-        result[:, -1:] = cval
-        result[:, :-1] = image[:, 1:]
-    elif shift == (-1, -1):
-        result[-1:, :] = cval
-        result[:, -1:] = cval
-        result[:-1, :-1] = image[1:, 1:]
-    elif shift == (1, 1):
-        result[:1, :] = cval
-        result[:, :1] = cval
-        result[1:, 1:] = image[:-1, :-1]
-    elif shift == (1, -1):
-        result[:1, :] = cval
-        result[:, -1:] = cval
-        result[1:, :-1] = image[:-1, 1:]
-    elif shift == (-1, 1):
-        result[-1:, :] = cval
-        result[:, 1] = cval
-        result[:-1, 1:] = image[1:, :-1]
-    else:
-        raise ValueError(f"Unspecified shift value: {shift}")
-    return result
-
-
 def matching_classes(
     cfd_image: numpy.array, offsets: List[Tuple[int, int]] = [(1, 0), (0, 1)]
 ):
@@ -154,7 +93,6 @@ def matching_classes(
         ],
         axis=2,
     )
-
 
 def matching_neighbours(
     image: numpy.array,
